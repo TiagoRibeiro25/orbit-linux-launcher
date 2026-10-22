@@ -2,6 +2,8 @@
 
 A simple and lightweight launcher for Linux systems, designed to provide quick access to your applications and tools.
 
+![Orbit Linux Launcher Screenshot](assets/screenshot.png)
+
 ## Development
 
 To set up the development environment, follow these steps:
