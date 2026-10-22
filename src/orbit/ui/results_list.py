@@ -21,6 +21,11 @@ from orbit.services.icon_service import IconService
 from orbit.ui.app_item import AppItem
 from orbit.ui.styles import Theme
 
+# Only the rows around the viewport are materialized. Building every possible
+# result up front costs tens of milliseconds and resolves icons nobody sees.
+_INITIAL_ROW_COUNT = 14
+_SCROLL_OVERSCAN = 3
+
 
 class _OrbitArt(QWidget):
     """Small decorative planet used by the empty state."""
@@ -182,7 +187,7 @@ class ResultsList(QWidget):
         self._fade.raise_()
 
         scrollbar = self._scroll.verticalScrollBar()
-        scrollbar.valueChanged.connect(self._update_fade)
+        scrollbar.valueChanged.connect(self._on_scroll)
         scrollbar.rangeChanged.connect(self._update_fade)
 
         self._stack.setCurrentWidget(self._empty)
@@ -201,23 +206,7 @@ class ResultsList(QWidget):
         self._clear_items()
 
         self._results = list(results)
-        for index, result in enumerate(self._results):
-            entry = result.entry
-            icon = self._icons.get_icon(entry.icon, entry.name, self._icon_size)
-            item = AppItem(
-                result,
-                icon,
-                index,
-                self._theme,
-                icon_size=self._icon_size,
-                show_category=self._show_categories,
-                parent=self._content,
-            )
-            item.activated.connect(self._activate)
-            item.hovered.connect(self._hover)
-            self._content_layout.addWidget(item, 0)
-            self._items.append(item)
-
+        self._build_items(min(len(self._results), _INITIAL_ROW_COUNT))
         self._update_content_height()
 
         if self._results:
@@ -226,6 +215,7 @@ class ResultsList(QWidget):
             self._scroll.verticalScrollBar().setValue(0)
             self._stack.setCurrentWidget(self._scroll)
             QTimer.singleShot(0, self._ensure_selection_visible)
+            QTimer.singleShot(0, self._fill_visible_rows)
         else:
             self._selected_index = -1
             if not has_applications:
@@ -247,11 +237,11 @@ class ResultsList(QWidget):
         QTimer.singleShot(0, self._update_fade)
 
     def move_selection(self, delta: int) -> None:
-        if not self._items:
+        if not self._results:
             return
 
         start = max(self._selected_index, 0)
-        self._set_selected((start + delta) % len(self._items))
+        self._set_selected((start + delta) % len(self._results))
 
     def activate_current(self) -> None:
         if 0 <= self._selected_index < len(self._results):
@@ -264,6 +254,52 @@ class ResultsList(QWidget):
 
     def set_empty_message(self, title: str, body: str) -> None:
         self._empty.set_message(title, body)
+
+    def _build_items(self, count: int) -> None:
+        target = min(count, len(self._results))
+        if target <= len(self._items):
+            return
+
+        for index in range(len(self._items), target):
+            result = self._results[index]
+            item = AppItem(
+                result,
+                self._icons,
+                index,
+                self._theme,
+                icon_size=self._icon_size,
+                show_category=self._show_categories,
+                parent=self._content,
+            )
+            item.activated.connect(self._activate)
+            item.hovered.connect(self._hover)
+            self._content_layout.addWidget(item, 0)
+            self._items.append(item)
+
+    def _ensure_items_through(self, index: int) -> None:
+        if index >= len(self._items):
+            self._build_items(
+                min(len(self._results), max(index + 1, len(self._items) + 8))
+            )
+
+    def _fill_visible_rows(self) -> None:
+        if not self._results:
+            return
+
+        scrollbar = self._scroll.verticalScrollBar()
+        viewport_height = self._scroll.viewport().height()
+        if viewport_height <= 0:
+            return
+
+        step = AppItem.ROW_HEIGHT + self._content_layout.spacing()
+        last_row = (scrollbar.value() + viewport_height) // step
+        target = min(len(self._results), last_row + 1 + _SCROLL_OVERSCAN)
+        self._build_items(max(target, _INITIAL_ROW_COUNT))
+        self._update_fade()
+
+    def _on_scroll(self, value: int) -> None:
+        self._fill_visible_rows()
+        self._update_fade()
 
     def _clear_items(self) -> None:
         self._selected_index = -1
@@ -282,21 +318,19 @@ class ResultsList(QWidget):
     def _update_content_height(self) -> None:
         margins = self._content_layout.contentsMargins()
         spacing = self._content_layout.spacing()
-        row_height = (
-            max(self._items[0].sizeHint().height(), self._items[0].minimumHeight())
-            if self._items
-            else 0
-        )
+        count = len(self._results)
         content_height = margins.top() + margins.bottom()
-        if self._items:
-            content_height += len(self._items) * row_height
-            content_height += max(0, len(self._items) - 1) * spacing
+        if count:
+            content_height += count * AppItem.ROW_HEIGHT
+            content_height += max(0, count - 1) * spacing
         self._content.setMinimumHeight(content_height)
         self._content.updateGeometry()
 
     def _set_selected(self, index: int, *, scroll: bool = True) -> None:
-        if not (0 <= index < len(self._items)):
+        if not (0 <= index < len(self._results)):
             return
+
+        self._ensure_items_through(index)
 
         if index != self._selected_index:
             if 0 <= self._selected_index < len(self._items):
@@ -308,7 +342,8 @@ class ResultsList(QWidget):
             self._ensure_selection_visible()
 
     def _ensure_selection_visible(self) -> None:
-        if 0 <= self._selected_index < len(self._items):
+        if 0 <= self._selected_index < len(self._results):
+            self._ensure_items_through(self._selected_index)
             self._scroll.ensureWidgetVisible(
                 self._items[self._selected_index],
                 0,
@@ -336,6 +371,8 @@ class ResultsList(QWidget):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
+        if self.isVisible():
+            self._fill_visible_rows()
         self._update_fade()
 
     def _activate(self, index: int) -> None:

@@ -6,9 +6,10 @@ import logging
 import os
 import signal
 import sys
+from pathlib import Path
 
 from PyQt6.QtCore import QLoggingCategory, Qt, QTimer
-from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtWidgets import QApplication
 
 from orbit import __version__
@@ -24,6 +25,8 @@ from orbit.ui.styles import (
 )
 
 logger = logging.getLogger(__name__)
+
+_APP_ICON = Path(__file__).resolve().parent / "assets" / "orbit.svg"
 
 
 def _configure_environment() -> bool:
@@ -105,7 +108,11 @@ def run(argv: list[str] | None = None) -> int:
     )
 
     icon_service = IconService(settings.icon_size)
-    application.setWindowIcon(icon_service.get_icon("", APP_NAME, size=64))
+    application.setWindowIcon(
+        QIcon(str(_APP_ICON))
+        if _APP_ICON.is_file()
+        else icon_service.get_icon("", APP_NAME, size=64)
+    )
 
     entries = AppDiscovery().discover()
     logger.info("Starting Orbit with %d applications", len(entries))

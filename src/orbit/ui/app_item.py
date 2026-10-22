@@ -9,10 +9,10 @@ from PyQt6.QtGui import (
     QFont,
     QFontMetrics,
     QGuiApplication,
-    QIcon,
     QMouseEvent,
     QPainter,
     QPen,
+    QPixmap,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from orbit.core.search import SearchResult
+from orbit.services.icon_service import IconService
 from orbit.ui.styles import Theme
 
 _CATEGORY_PRIORITY = (
@@ -239,16 +240,56 @@ class _EnterHint(QWidget):
         painter.drawLine(QPointF(9.4, 11.0), QPointF(11.8, 13.3))
 
 
+class _IconTile(QWidget):
+    """Resolve and paint an application icon only when it becomes visible."""
+
+    def __init__(
+        self,
+        icon_service: IconService,
+        icon_name: str,
+        fallback_text: str,
+        size: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._icons = icon_service
+        self._icon_name = icon_name
+        self._fallback_text = fallback_text
+        self._size = size
+        self._pixmap: QPixmap | None = None
+
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, event) -> None:
+        if self._pixmap is None:
+            icon = self._icons.get_icon(
+                self._icon_name,
+                self._fallback_text,
+                self._size,
+            )
+            screen = QGuiApplication.primaryScreen()
+            dpr = screen.devicePixelRatio() if screen is not None else 1.0
+            self._pixmap = icon.pixmap(QSize(self._size, self._size), dpr)
+
+        if self._pixmap.isNull():
+            return
+
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._pixmap)
+
+
 class AppItem(QFrame):
     """One row in the launcher's results list."""
 
+    ROW_HEIGHT = 58
     activated = pyqtSignal(int)
     hovered = pyqtSignal(int)
 
     def __init__(
         self,
         result: SearchResult,
-        icon: QIcon,
+        icon_service: IconService,
         index: int,
         theme: Theme,
         icon_size: int = 38,
@@ -263,7 +304,7 @@ class AppItem(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(58)
+        self.setFixedHeight(self.ROW_HEIGHT)
         self.setProperty("selected", False)
 
         entry = result.entry
@@ -278,16 +319,14 @@ class AppItem(QFrame):
         layout.setContentsMargins(11, 8, 12, 8)
         layout.setSpacing(14)
 
-        icon_label = QLabel(self)
-        icon_label.setFixedSize(icon_size, icon_size)
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-
-        screen = QGuiApplication.primaryScreen()
-        dpr = screen.devicePixelRatio() if screen is not None else 1.0
-        pixmap = icon.pixmap(QSize(icon_size, icon_size), dpr)
-        if not pixmap.isNull():
-            icon_label.setPixmap(pixmap)
+        icon_tile = _IconTile(
+            icon_service,
+            entry.icon,
+            entry.name,
+            icon_size,
+            self,
+        )
+        layout.addWidget(icon_tile, 0, Qt.AlignmentFlag.AlignVCenter)
 
         text_widget = QWidget(self)
         text_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -312,7 +351,6 @@ class AppItem(QFrame):
             text_height += 1 + description_label.height()
         text_widget.setFixedHeight(text_height)
 
-        layout.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(text_widget, 1, Qt.AlignmentFlag.AlignVCenter)
 
         category = category_label(entry.categories) if show_category else ""

@@ -15,6 +15,7 @@ import shutil
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
+from orbit.core import desktop_cache
 from orbit.core.desktop_entry import DesktopEntry
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,11 @@ class AppDiscovery:
         found: dict[str, DesktopEntry] = {}
         seen_ids: set[str] = set()
 
+        cache_enabled = self._data_dirs is None
+        cache_files = desktop_cache.load() if cache_enabled else {}
+        new_cache: dict[str, dict[str, object]] = {}
+        cache_dirty = False
+
         for directory in application_dirs(self._data_dirs):
             for path in sorted(directory.rglob("*.desktop")):
                 if path.name.startswith("."):
@@ -114,13 +120,62 @@ class AppDiscovery:
                     continue
                 seen_ids.add(desktop_id)
 
-                entry = DesktopEntry.from_file(path, desktop_id)
+                try:
+                    stat = path.stat()
+                except OSError:
+                    stat = None
+
+                entry: DesktopEntry | None = None
+                cached_record: dict[str, object] | None = None
+                cached_failure = False
+                cache_key = str(path)
+                cached = cache_files.get(cache_key) if cache_enabled else None
+                if (
+                    stat is not None
+                    and isinstance(cached, dict)
+                    and cached.get("mtime_ns") == stat.st_mtime_ns
+                    and cached.get("size") == stat.st_size
+                ):
+                    if cached.get("entry") is None:
+                        cached_record = cached
+                        cached_failure = True
+                    else:
+                        entry = desktop_cache.entry_from_payload(cached.get("entry"))
+                        if entry is not None:
+                            cached_record = cached
+
+                if entry is None and not cached_failure:
+                    entry = DesktopEntry.from_file(path, desktop_id)
+                    cache_dirty = True
+
                 if entry is None:
                     logger.debug("Ignoring malformed desktop file: %s", path)
+                    if cache_enabled and stat is not None:
+                        if cached_record is None:
+                            cached_record = {
+                                "mtime_ns": stat.st_mtime_ns,
+                                "size": stat.st_size,
+                                # Keep malformed files from being reparsed
+                                # on every launch until their metadata changes.
+                                "entry": None,
+                            }
+                        new_cache[cache_key] = cached_record
                     continue
+
+                if cache_enabled and stat is not None:
+                    if cached_record is None:
+                        cached_record = {
+                            "mtime_ns": stat.st_mtime_ns,
+                            "size": stat.st_size,
+                            "entry": desktop_cache.entry_payload(entry),
+                        }
+                    new_cache[cache_key] = cached_record
 
                 if self._is_available(entry):
                     found[desktop_id] = entry
+
+        if cache_enabled and (cache_dirty or set(new_cache) != set(cache_files)):
+            desktop_cache.save(new_cache)
 
         logger.info("Discovered %d applications", len(found))
         entries = sorted(found.values(), key=lambda entry: entry.name.casefold())
